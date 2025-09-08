@@ -1,0 +1,12 @@
+{
+  "allowed_ports": [80, 443],
+  "required_headers": {
+    "Strict-Transport-Security": "^max-age=\\d+",
+    "Content-Security-Policy": ".+",
+    "X-Frame-Options": "^(DENY|SAMEORIGIN)$",
+    "X-Content-Type-Options": "^nosniff$",
+    "Referrer-Policy": ".+"
+  },
+  "allowed_tls_versions": ["TLSv1.2", "TLSv1.3"],
+  "min_cert_days_valid": 30
+}
