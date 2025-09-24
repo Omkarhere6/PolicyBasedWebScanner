@@ -83,6 +83,7 @@ class Policy:
     required_headers: Dict[str, str] = field(default_factory=dict)
     allowed_tls_versions: List[str] = field(default_factory=lambda: ["TLSv1.2", "TLSv1.3"])
     min_cert_days_valid: int = 30
+    extra_ports: List[int] = field(default_factory=list) 
 
     @staticmethod
     def load(path: Optional[str]) -> "Policy":
@@ -100,6 +101,7 @@ class Policy:
             required_headers=data.get("required_headers", {}),
             allowed_tls_versions=data.get("allowed_tls_versions", ["TLSv1.2", "TLSv1.3"]),
             min_cert_days_valid=int(data.get("min_cert_days_valid", 30)),
+            extra_ports=[int(p) for p in data.get("extra_ports", [])]
         )
 
 
@@ -280,120 +282,103 @@ class ScannerEngine:
         mkdir_p(REPORTS_DIR)
         mkdir_p(POC_DIR)
 
-    def run(self) -> List[Finding]:
+    def run(self) -> tuple:
         findings: List[Finding] = []
+        safe: Dict[str, list] = {"Ports": [], "TLS": [], "Certificates": [], "Headers": []}
 
-        # 1) PORTS
+        # -------- Ports --------
         port_scanner = PortScanner(self.host, self.ports)
         port_results = port_scanner.scan()
         for port, status, banner in port_results:
-            if status == "open" and port not in self.policy.allowed_ports:
-                detection = f"Port {port} is OPEN but not in allowed_ports policy {self.policy.allowed_ports}."
-                exploitation = f"Banner: {banner or 'None (no banner received)'}"
-                remediation = "Close the port or restrict access; only expose ports required by policy."
-                findings.append(Finding(
-                    category="Port",
-                    title=f"Unexpected open port {port}",
-                    severity="Medium",
-                    detection=detection,
-                    exploitation=exploitation,
-                    remediation=remediation,
-                    evidence={"port": str(port), "status": status, "banner": banner or ""}
-                ))
-
-        # 2) TLS + CERT (assume 443 when scheme is https or port 443 present)
-        tls_port = 443 if 443 in self.ports else (443 if self.scheme == "https" else None)
-        if tls_port:
-            tls = TLSScanner(self.host, port=tls_port)
-            # TLS protocol support check (exploitation: force handshake)
-            supported = []
-            for name in ["TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"]:
-                ok, msg = tls.try_version(name)
-                if ok:
-                    supported.append(name)
-                # Collect weak protocol acceptance
-                if ok and name not in self.policy.allowed_tls_versions:
+            if status == "open":
+                if port in self.policy.allowed_ports:
+                    safe["Ports"].append(f"{port} (allowed, open)")
+                else:
                     findings.append(Finding(
-                        category="TLS",
-                        title=f"Weak protocol accepted: {name}",
-                        severity="High" if name in ("TLSv1", "TLSv1.1") else "Medium",
-                        detection=f"Server supports {name}. Allowed: {self.policy.allowed_tls_versions}",
-                        exploitation=msg,
-                        remediation="Disable legacy protocols; enforce minimum TLS per policy.",
-                        evidence={"accepted_versions": ", ".join(supported)}
+                        category="Port",
+                        title=f"Unexpected open port {port}",
+                        severity="Medium",
+                        detection=f"Port {port} is open but not allowed by policy {self.policy.allowed_ports}",
+                        exploitation=f"Banner: {banner or 'None'}",
+                        remediation="Close/restrict port",
+                        evidence={"port": port, "status": status, "banner": banner or ""}
                     ))
-            # Certificate validation
-            cert, err = tls.fetch_certificate()
-            if cert is None:
+
+        # -------- TLS --------
+        tls_port = 443 if 443 in self.ports or self.scheme == "https" else None
+        if tls_port:
+            tls = TLSScanner(self.host, tls_port)
+            for version in ["TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"]:
+                ok, msg = tls.try_version(version)
+                if ok:
+                    if version in self.policy.allowed_tls_versions:
+                        safe["TLS"].append(version)
+                    else:
+                        findings.append(Finding(
+                            category="TLS",
+                            title=f"Weak TLS protocol {version} accepted",
+                            severity="Medium",
+                            detection=f"Server supports {version}, allowed: {self.policy.allowed_tls_versions}",
+                            exploitation=msg,
+                            remediation="Disable legacy TLS",
+                            evidence={"accepted_versions": version}
+                        ))
+
+        # -------- Certificate --------
+        cert, err = tls.fetch_certificate() if tls_port else (None, "TLS not available")
+        if cert:
+            not_after = cert.get("notAfter")
+            days_left = None
+            if not_after:
+                try:
+                    exp = dt.datetime.strptime(not_after, "%b %d %H:%M:%S %Y GMT")
+                    days_left = (exp - dt.datetime.utcnow()).days
+                except Exception:
+                    pass
+            if days_left is not None and days_left >= self.policy.min_cert_days_valid:
+                safe["Certificates"].append(f"Valid certificate ({days_left} days left)")
+            elif days_left is not None:
                 findings.append(Finding(
                     category="Certificate",
-                    title="Certificate retrieval failed",
-                    severity="High",
-                    detection=f"Could not retrieve certificate: {err}",
-                    exploitation="TLS handshake to fetch certificate failed (see detection).",
-                    remediation="Fix TLS endpoint / ensure certificate is correctly installed.",
-                    evidence={"error": err or ""}
+                    title="Certificate near expiry",
+                    severity="Medium" if days_left >= 0 else "High",
+                    detection=f"Certificate expires in {days_left} day(s). Policy requires >= {self.policy.min_cert_days_valid}",
+                    exploitation="Inspected certificate validity",
+                    remediation="Renew certificate",
+                    evidence={"notAfter": not_after}
                 ))
-            else:
-                # Parse 'notAfter' field if present
-                not_after = cert.get('notAfter')
-                days_left = None
-                if not_after:
-                    try:
-                        # e.g., 'Jun 15 12:00:00 2027 GMT'
-                        exp = dt.datetime.strptime(not_after, "%b %d %H:%M:%S %Y GMT")
-                        days_left = (exp - dt.datetime.utcnow()).days
-                    except Exception:
-                        days_left = None
-                if days_left is not None and days_left < self.policy.min_cert_days_valid:
-                    findings.append(Finding(
-                        category="Certificate",
-                        title="Certificate near expiry",
-                        severity="Medium" if days_left >= 0 else "High",
-                        detection=f"Certificate expires in {days_left} day(s). Policy requires >= {self.policy.min_cert_days_valid} days.",
-                        exploitation="Established TLS and inspected certificate validity period.",
-                        remediation="Renew/replace the certificate before expiry threshold.",
-                        evidence={"subject": str(cert.get('subject', '')),
-                                  "issuer": str(cert.get('issuer', '')),
-                                  "notAfter": not_after or ""}
-                    ))
+        else:
+            findings.append(Finding(
+                category="Certificate",
+                title="Certificate retrieval failed",
+                severity="High",
+                detection=f"Could not fetch certificate: {err}",
+                exploitation="N/A",
+                remediation="Fix TLS endpoint",
+                evidence={"error": err or ""}
+            ))
 
-        # 3) HEADERS (HTTP/HTTPS)
+        # -------- Headers --------
         base_url = f"{self.scheme}://{self.host}"
         hdr_scanner = HeaderScanner(base_url)
         headers, hdr_err = hdr_scanner.fetch_headers()
-        if hdr_err:
-            findings.append(Finding(
-                category="Headers",
-                title="Header fetch failed",
-                severity="Medium",
-                detection=f"Failed to fetch headers from {base_url}: {hdr_err}",
-                exploitation="N/A",
-                remediation="Ensure the target is reachable and scheme/host are correct.",
-                evidence={}
-            ))
-        else:
-            # Check required headers by regex
+        if headers and not hdr_err:
             for hname, pattern in self.policy.required_headers.items():
-                actual = headers.get(hname)
-                if actual is None or not re.search(pattern, actual):
-                    poc_path = ""
-                    if hname in ("X-Frame-Options", "Content-Security-Policy"):
-                        poc_path = save_clickjacking_poc(base_url, POC_DIR)
+                val = headers.get(hname)
+                if val and re.search(pattern, val):
+                    safe["Headers"].append(f"{hname}: {val}")
+                else:
                     findings.append(Finding(
                         category="Headers",
                         title=f"Missing/weak header: {hname}",
                         severity="Medium",
-                        detection=f"Header '{hname}' value: {actual!r} does not match policy regex: {pattern}",
-                        exploitation=(
-                            f"Generated PoC at {poc_path} demonstrating potential clickjacking." if poc_path else
-                            "Demonstrated risk by absence/weakness of header (see detection)."
-                        ),
-                        remediation=f"Add/strengthen '{hname}' to satisfy policy.",
-                        evidence={"observed_value": actual or "(absent)"}
+                        detection=f"Header '{hname}' value: {val} does not match policy regex: {pattern}",
+                        exploitation="Generated PoC if applicable",
+                        remediation=f"Add/strengthen '{hname}'",
+                        evidence={"observed_value": val or "(absent)"}
                     ))
 
-        return findings
+        return findings, safe
 
 
 # ----------------------------- CLI -----------------------------

@@ -1,5 +1,6 @@
 {
-  "allowed_ports": [80, 443],
+  "allowed_ports": [80,443],
+  "extra_ports": [21, 25, 8080],
   "required_headers": {
     "Strict-Transport-Security": "^max-age=\\d+",
     "Content-Security-Policy": ".+",
