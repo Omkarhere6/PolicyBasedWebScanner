@@ -12,10 +12,10 @@ Single-file Python implementation that:
 
 USAGE EXAMPLES
 --------------
-python policy_web_scanner.py --host example.com \
+python Web_Scanner.py --host example.com \
   --ports 80,443,21,22 --scheme https --policy policy.json
 
-python policy_web_scanner.py --host 127.0.0.1 --ports 80,443 --scheme http
+python Web_Scanner.py --host 127.0.0.1 --ports 80,443 --scheme http
 
 SAMPLE POLICY (JSON)
 --------------------
@@ -54,9 +54,9 @@ try:
     import urllib.request as urllib_request
     import urllib.error as urllib_error
 except Exception:
-    urllib_request = None  # Fallback handled later
+    urllib_request = None 
 
-# Optional YAML support
+
 try:
     import yaml  # type: ignore
     HAS_YAML = True
@@ -222,19 +222,27 @@ class HeaderScanner:
 
 
 # ----------------------------- Report Writer -----------------------------
+import re
+
 class Reporter:
     def __init__(self, out_dir: str):
         self.out_dir = out_dir
         mkdir_p(self.out_dir)
 
-    def write(self, host: str, findings: List[Finding]):
+    def write(self, host: str, findings: list):
         ts = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        base = os.path.join(self.out_dir, f"report_{host}_{ts}")
+        # SANITIZE HOST FOR FILENAME
+        safe_host = re.sub(r'^https?://', '', host)        # remove http:// or https://
+        safe_host = re.sub(r'[^A-Za-z0-9._-]', '_', safe_host)  # replace invalid characters
+        base = os.path.join(self.out_dir, f"report_{safe_host}_{ts}")
+
         data = [f.__dict__ for f in findings]
-        # JSON
+
+        # JSON report
         with open(base + ".json", "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False, default=str)
-        # Markdown (easy to paste into docs)
+
+        # Markdown report
         md = [f"# Security Scan Report for {host}", f"_UTC: {ts}_", ""]
         for fnd in findings:
             md.append(f"## [{fnd.severity}] {fnd.category}: {fnd.title}")
@@ -242,10 +250,11 @@ class Reporter:
             md.append("**Exploitation (PoC)**:\n" + fnd.exploitation)
             md.append("**Remediation**:\n" + fnd.remediation)
             if fnd.evidence:
-                md.append("**Evidence**\n`````\n" + pretty_json(fnd.evidence) + "\n`````")
+                md.append("**Evidence**\n`````\n" + json.dumps(fnd.evidence, indent=2) + "\n`````")
             md.append("")
         with open(base + ".md", "w", encoding="utf-8") as f:
             f.write("\n".join(md))
+
         return base + ".json", base + ".md"
 
 
@@ -405,8 +414,8 @@ def parse_args():
         epilog=textwrap.dedent(
             """
             Examples:
-              python policy_web_scanner.py --host example.com --ports 80,443 --scheme https --policy policy.json
-              python policy_web_scanner.py --host 10.0.0.5 --ports 80,443,21,22 --scheme http
+              python Web_Scanner.py --host example.com --ports 80,443 --scheme https --policy policy.json
+              python Web_Scanner.py --host 10.0.0.5 --ports 80,443,21,22 --scheme http
             """
         )
     )

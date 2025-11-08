@@ -1,0 +1,22 @@
+[
+  {
+    "category": "Certificate",
+    "title": "Certificate retrieval failed",
+    "severity": "High",
+    "detection": "Could not retrieve certificate: [Errno 11001] getaddrinfo failed",
+    "exploitation": "TLS handshake to fetch certificate failed (see detection).",
+    "remediation": "Fix TLS endpoint / ensure certificate is correctly installed.",
+    "evidence": {
+      "error": "[Errno 11001] getaddrinfo failed"
+    }
+  },
+  {
+    "category": "Headers",
+    "title": "Header fetch failed",
+    "severity": "Medium",
+    "detection": "Failed to fetch headers from https://http://www.sgbit.edu.in/: <urlopen error [Errno 11001] getaddrinfo failed>",
+    "exploitation": "N/A",
+    "remediation": "Ensure the target is reachable and scheme/host are correct.",
+    "evidence": {}
+  }
+]

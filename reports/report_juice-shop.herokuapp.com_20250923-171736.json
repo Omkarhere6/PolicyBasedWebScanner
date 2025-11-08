@@ -1,0 +1,11 @@
+[
+  {
+    "category": "Headers",
+    "title": "Header fetch failed",
+    "severity": "Medium",
+    "detection": "Failed to fetch headers from https://juice-shop.herokuapp.com: The read operation timed out",
+    "exploitation": "N/A",
+    "remediation": "Ensure the target is reachable and scheme/host are correct.",
+    "evidence": {}
+  }
+]
